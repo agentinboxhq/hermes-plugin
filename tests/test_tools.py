@@ -462,6 +462,20 @@ async def test_hermes_resolves_its_own_conversation_once_its_answer_is_out(fake,
     assert routes.index("POST /v1/inbox/conv_ben/resolve") > routes.index("POST /v1/inbox/messages")
 
 
+async def test_a_reply_that_didnt_go_out_leaves_the_conversation_open(fake, adapter, monkeypatch):
+    adapter._resolve_quiet_seconds = 0.05
+    capture(adapter)
+    await adapter._on_message(message("m1", text="Thanks, that's all I needed.", **FROM_BEN))
+    await call(monkeypatch, "agentinbox_resolve", {}, BENS_CHAT)
+    fake.fail("POST /v1/inbox/messages", 400, {"message": "The message is too long."})
+
+    sent = await adapter.send("conv_ben", "Glad I could help, Ben!")
+
+    assert sent.success is False
+    await asyncio.sleep(0.2)
+    assert fake.resolved == []
+
+
 async def test_while_hermes_works_there_the_resolve_waits(fake, adapter, monkeypatch):
     adapter._resolve_quiet_seconds = 0.1
     capture(adapter)

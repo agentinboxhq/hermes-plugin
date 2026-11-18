@@ -382,6 +382,10 @@ class AgentInboxAdapter(BasePlatformAdapter):
             sent = await self.api.create_interaction(payload)
         except ApiError as exc:
             logger.error("[Agent Inbox] Couldn't write in %s: %s", chat_id, exc)
+            if chat_id in self._resolving:
+                # Its answer never got there: resolving now would leave the conversation resolved without one.
+                self._keep_open(chat_id)
+                logger.warning("[Agent Inbox] Left %s open, as Hermes's reply there didn't go out.", chat_id)
             return SendResult(success=False, error=str(exc), retryable=exc.outage)
         self._put_off_resolving(chat_id)
         return SendResult(success=True, message_id=str(sent.get("id") or ""))
