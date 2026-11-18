@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Hermes runs on Python 3.11 to 3.14.
+        python: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - name: Check out Hermes Agent, whose adapter base classes the plugin builds on
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          path: hermes-agent
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Hermes and the test tools
+        run: |
+          uv venv .venv --python ${{ matrix.python }}
+          uv pip install --python .venv/bin/python ./hermes-agent pytest pytest-asyncio httpx
+      - name: Test
+        working-directory: plugin
+        run: ../.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
+        env:
+          HERMES_AGENT_DIR: ${{ github.workspace }}/hermes-agent
+          PYTHONPATH: tests
+      - name: Validate the plugin as `hermes plugins install` does
+        run: .venv/bin/hermes plugins validate plugin
+        env:
+          HERMES_HOME: ${{ runner.temp }}/hermes-home
