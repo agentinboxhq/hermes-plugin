@@ -11,11 +11,6 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # Hermes runs on Python 3.11 to 3.14.
-        python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,18 +21,18 @@ jobs:
           repository: NousResearch/hermes-agent
           path: hermes-agent
       - uses: astral-sh/setup-uv@v6
-      - name: Install Hermes and the test tools
-        run: |
-          uv venv .venv --python ${{ matrix.python }}
-          # Hermes refuses to be built as a wheel; an editable install is how it says to develop against it.
-          uv pip install --python .venv/bin/python -e ./hermes-agent pytest pytest-asyncio httpx
+      # Hermes locks its dependencies for Python 3.14 only, with overrides a plain `pip install` of it can't resolve,
+      # so it's installed from its own lock, which brings pytest with its dev tools.
+      - name: Install Hermes from its lock
+        working-directory: hermes-agent
+        run: uv sync --frozen --python 3.14
       - name: Test
         working-directory: plugin
-        run: ../.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
+        run: ../hermes-agent/.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
         env:
           HERMES_AGENT_DIR: ${{ github.workspace }}/hermes-agent
           PYTHONPATH: tests
       - name: Validate the plugin as `hermes plugins install` does
-        run: .venv/bin/hermes plugins validate plugin
+        run: hermes-agent/.venv/bin/hermes plugins validate plugin
         env:
           HERMES_HOME: ${{ runner.temp }}/hermes-home
