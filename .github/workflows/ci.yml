@@ -25,10 +25,10 @@ jobs:
       # so it's installed from its own lock, which brings pytest with its dev tools.
       - name: Install Hermes from its lock
         working-directory: hermes-agent
-        run: uv sync --frozen --python 3.14
+        run: uv sync --frozen --python 3.14 --group dev
       - name: Test
         working-directory: plugin
-        run: ../hermes-agent/.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
+        run: $GITHUB_WORKSPACE/hermes-agent/.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
         env:
           HERMES_AGENT_DIR: ${{ github.workspace }}/hermes-agent
           PYTHONPATH: tests
