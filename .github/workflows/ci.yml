@@ -29,7 +29,8 @@ jobs:
       - name: Install Hermes and the test tools
         run: |
           uv venv .venv --python ${{ matrix.python }}
-          uv pip install --python .venv/bin/python ./hermes-agent pytest pytest-asyncio httpx
+          # Hermes refuses to be built as a wheel; an editable install is how it says to develop against it.
+          uv pip install --python .venv/bin/python -e ./hermes-agent pytest pytest-asyncio httpx
       - name: Test
         working-directory: plugin
         run: ../.venv/bin/python -m pytest -c tests/pytest.ini --rootdir=tests tests -q
