@@ -273,6 +273,51 @@ async def test_an_open_question_takes_words(fake, resolved):
     assert resolved == [("clarify", "clar_2", "Lobster")]
 
 
+async def test_approve_and_deny_choices_ask_for_an_approval(fake, resolved):
+    adapter = make(fake)
+    # As Hermes hands them over, with its recommendation on the first.
+    await adapter.send_clarify("conv_1", "Deploy to staging?", ["Approve (Recommended)", "Deny"], "clar_1", "sess_1")
+    first = fake.last("approve")
+    assert first["thread"] == "conv_1"
+    assert first["card"] == {"title": "Deploy to staging?", "approveLabel": "Approve", "denyLabel": "Deny"}
+    await adapter.send_clarify("conv_1", "Email Dima?", ["❌ Reject", "✅ Allow"], "clar_2", "sess_1")
+    second = fake.last("approve")
+    assert (second["card"]["approveLabel"], second["card"]["denyLabel"]) == ("✅ Allow", "❌ Reject")
+    await adapter.send_clarify("conv_1", "Ship it?", ["Confirm", "Cancel"], "clar_3", "sess_1")
+    third = fake.last("approve")
+    fake.answer(first["id"], "denied")
+    fake.answer(second["id"], "approved", option_id="approve")
+    fake.answer(third["id"], "answered", text="Wait for Monday")
+    for _ in range(100):
+        if len(resolved) == 3:
+            break
+        await asyncio.sleep(0.01)
+    assert sorted(resolved) == [("clarify", "clar_1", "Deny"), ("clarify", "clar_2", "✅ Allow"),
+                                ("clarify", "clar_3", "Wait for Monday")]
+
+
+async def test_other_choices_stay_a_choice(fake, resolved, monkeypatch):
+    adapter = make(fake)
+    for choices in (["Yes", "No"], ["Approve", "Allow"], ["Approve", "Deny", "Later"], ["Approve it", "Deny"]):
+        await adapter.send_clarify("conv_1", "Deploy?", choices, "clar_1", "sess_1")
+        assert fake.sent[-1]["kind"] == "choose", choices
+    monkeypatch.setattr(adapter_module, "_multi_select", lambda clarify_id: True)
+    await adapter.send_clarify("conv_1", "Deploy?", ["Approve", "Deny"], "clar_2", "sess_1")
+    assert fake.sent[-1]["kind"] == "ask"
+
+
+async def test_a_message_while_hermes_asked_ends_the_wait_at_once(fake):
+    adapter = make(fake)
+    capture(adapter)
+    await adapter._on_message(message("m1", conversation="conv_ada", text="Ask me"))
+    since = adapter.latest_id_in("conv_ada")
+    # Written while the card went out: nothing would end the wait later.
+    await adapter._on_message(message("m2", conversation="conv_ada", text="And one more thing"))
+    assert adapter.wait_here("int_1", "conv_ada", since).cancelled()
+    assert adapter._asking == {}
+    assert not adapter.wait_here("int_2", "conv_ada", adapter.latest_id_in("conv_ada")).done()
+
+
 async def test_stop_withdraws_the_runs_open_cards(fake, resolved):
     adapter = make(fake)
     await adapter._send_exec_approval_prompt(approval())

@@ -42,14 +42,23 @@ logger = logging.getLogger(__name__)
 TOOLSET = "agentinbox"
 
 ASK_OPERATOR = "agentinbox_ask_operator"
+ASK_HERE = "agentinbox_ask_here"
 SEND = "agentinbox_send"
 CONVERSATIONS = "agentinbox_conversations"
 READ = "agentinbox_read"
 CONTACTS = "agentinbox_contacts"
 RESOLVE = "agentinbox_resolve"
 
-# This plugin's tools; in a contact's chat, only reading and resolving that conversation stay on.
-PLUGIN_TOOLS = (ASK_OPERATOR, SEND, CONVERSATIONS, READ, CONTACTS, RESOLVE)
+# This plugin's tools; in a contact's chat, only asking in that conversation, reading it and resolving it stay on.
+PLUGIN_TOOLS = (ASK_OPERATOR, ASK_HERE, SEND, CONVERSATIONS, READ, CONTACTS, RESOLVE)
+
+# What a card asks for, in the words of the CLI and the MCP server: `tell` nothing, `ask` words, `approve` Approve or
+# Deny, `choose` one of a few options.
+KINDS = ("tell", "ask", "approve", "choose")
+
+# How long agentinbox_ask_here waits for the answer within its call: well inside the 7 minutes Hermes gives a tool
+# call by default. A later answer comes into the chat as a message.
+ASK_HERE_WAIT_SECONDS = 5 * 60
 
 # Hermes's toolsets a contact's chat always has: asking the person something, and keeping a plan.
 CONTACT_TOOLSETS = ("clarify", "todo")
@@ -379,7 +388,7 @@ def _text(value: Any, name: str) -> str:
     return text
 
 
-def _choices(value: Any) -> List[str]:
+def _options(value: Any) -> List[str]:
     """A plain list, or the shapes small models send for one: a comma-separated string, or objects with a label."""
     if isinstance(value, str):
         value = [part for line in value.splitlines() for part in line.split(",")]
@@ -406,21 +415,29 @@ class Answer:
 
     kind: str
     options: Dict[str, str] = field(default_factory=dict)  # option id -> its label
+    approve_label: str = ""
+    deny_label: str = ""
 
 
 def _answer(args: Mapping[str, Any], *, default: str) -> Answer:
-    choices = _choices(args.get("choices"))
-    wanted = str(args.get("answer") or "").strip().lower() or ("choose" if choices else default)
-    if choices and wanted in ("none", "text"):
-        wanted = "choose"
-    kinds = {"none": "tell", "text": "ask", "approve": "approve", "choose": "choose"}
-    if wanted not in kinds:
-        raise ToolError("`answer` is one of: none, text, approve, choose.")
-    if wanted == "choose":
-        if not 2 <= len(choices) <= 10:
-            raise ToolError("`answer: choose` takes 2 to 10 `choices`.")
-        return Answer("choose", {f"opt_{index}": label for index, label in enumerate(choices, start=1)})
-    return Answer(kinds[wanted])
+    """`kind`, `options`, `approve_label` and `deny_label`, as the CLI and the MCP server take them. Options without a
+    kind, or with `ask` or `tell`, make it `choose`; labels without a kind make it `approve`."""
+    options = _options(args.get("options"))
+    labels = [words.clean(args.get(name)).strip()[:OPTION_MAX] for name in ("approve_label", "deny_label")]
+    kind = str(args.get("kind") or "").strip().lower()
+    if not kind:
+        kind = "choose" if options else "approve" if any(labels) else default
+    elif options and kind in ("tell", "ask"):
+        kind = "choose"
+    if kind not in KINDS:
+        raise ToolError(f"`kind` is one of: {', '.join(KINDS)}.")
+    if any(labels) and kind != "approve":
+        raise ToolError("`approve_label` and `deny_label` go with `kind: approve`.")
+    if kind == "choose":
+        if not 2 <= len(options) <= 10:
+            raise ToolError("`kind: choose` takes 2 to 10 `options`.")
+        return Answer("choose", {f"opt_{index}": label for index, label in enumerate(options, start=1)})
+    return Answer(kind, approve_label=labels[0], deny_label=labels[1])
 
 
 def _card(text: str, answer: Answer, body: Optional[str] = None) -> Dict[str, Any]:
@@ -428,7 +445,7 @@ def _card(text: str, answer: Answer, body: Optional[str] = None) -> Dict[str, An
     if body:
         card["body"] = words.clip_card(body)
     if answer.kind == "approve":
-        card.update(approveLabel="Approve", denyLabel="Deny")
+        card.update(approveLabel=answer.approve_label or "Approve", denyLabel=answer.deny_label or "Deny")
     if answer.kind == "choose":
         card["options"] = [{"id": key, "label": label} for key, label in answer.options.items()]
     return card
@@ -511,13 +528,13 @@ def _expect(adapter: Optional[Any], sent: Mapping[str, Any], *, question: str, t
 
 def ask_operator(args: Dict[str, Any], place: Here) -> str:
     question = _text(args.get("question"), "question")
-    answer = _answer(args, default="text")
+    answer = _answer(args, default="ask")
     if answer.kind == "tell":
         raise ToolError(f"A question needs an answer; to tell your operator something, use {SEND}.")
     adapter = _bound()
     _refuse_for_a_contact(adapter, place)
     if place.in_agent_inbox and _operators_own(adapter, place.chat_id, place.chat_type, place.user_id):
-        raise ToolError("You're talking with your operator in this chat: ask them in your answer instead.")
+        raise ToolError(f"You're talking with your operator in this chat: ask them here with {ASK_HERE} instead.")
 
     async def work(api: AgentInboxApi, adapter: Optional[Any]) -> str:
         operator = await _operator(api, adapter)
@@ -529,6 +546,57 @@ def ask_operator(args: Dict[str, Any], place: Here) -> str:
                                                               "isOperator": True}, answer=answer, place=place)
 
     return _run(work)
+
+
+def _asked_here(adapter: Any, place: Here) -> Dict[str, Any]:
+    """Who answers a question in this conversation, as its answer names them. Only what the operator writes, or a
+    contact in their own session at full access, is more than a request and data."""
+    if _operators_own(adapter, place.chat_id, place.chat_type, place.user_id):
+        return {"to": _operator_of(adapter), "toOperator": True, "toName": "Your operator"}
+    if not place.direct:
+        return {"to": "", "toOperator": False, "toName": "Someone in this conversation"}
+    return {"to": place.user_id, "toOperator": False, "toName": place.user_name or "The contact",
+            "trusted": _full_access(adapter, place.chat_id, place.chat_type, place.user_id, place.thread_id)}
+
+
+def ask_here(args: Dict[str, Any], place: Here) -> str:
+    """Asks the people in this Agent Inbox conversation, in it, and waits for their answer, as `reply <id> ask`,
+    `approve` or `choose` does in the CLI. Past the wait, the question stays open, and its answer comes to the chat as a
+    message."""
+    question = _text(args.get("question"), "question")
+    answer = _answer(args, default="ask")
+    if answer.kind == "tell":
+        raise ToolError("A question needs an answer; anything else, say in your answer here.")
+    not_here = (f"{ASK_HERE} asks in the Agent Inbox conversation you're in, and this isn't one. To ask your operator, "
+                f"use {ASK_OPERATOR}.")
+    bound = _bound()
+    if bound is None or not place.in_agent_inbox or place.chat_id == OPERATOR_HOME:
+        raise ToolError(not_here)
+    asked = _asked_here(bound, place)
+
+    async def post(api: AgentInboxApi, adapter: Optional[Any]) -> Tuple[str, concurrent.futures.Future]:
+        if adapter is None:
+            raise ToolError(not_here)
+        since = adapter.latest_id_in(place.chat_id)
+        sent = await api.create_interaction({"kind": answer.kind, "card": _card(question, answer),
+                                             "thread": place.chat_id, "ttlSeconds": words.TOOL_QUESTION_TTL_SECONDS})
+        question_id = str(sent.get("id") or "")
+        # Its answer comes to the chat, also after a restart, unless this call still waits for it.
+        adapter.expect_answer({"id": question_id, "question": question, **asked, "kind": answer.kind,
+                               "options": answer.options, "conversation": place.chat_id,
+                               "expiresAt": sent.get("expiresAt"), "chat": place.chat(_starter(adapter, place))})
+        return question_id, adapter.wait_here(question_id, place.chat_id, since)
+
+    async def stop_waiting(api: AgentInboxApi, adapter: Optional[Any]) -> Optional[tuple]:
+        return adapter.stop_waiting_here(question_id) if adapter is not None else None
+
+    question_id, waiting = _run(post)
+    try:
+        outcome = waiting.result(timeout=ASK_HERE_WAIT_SECONDS)
+    except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError):
+        # An answer that came just now is still this call's.
+        outcome = _run(stop_waiting)
+    return words.NO_ANSWER_YET if outcome is None else words.here_answer(*outcome)
 
 
 def _talking_with(place: Here, to: Mapping[str, Any]) -> bool:
@@ -601,7 +669,9 @@ def _this_conversation(args: Mapping[str, Any], place: Here, *, by_default: bool
 
 
 def _allowed_for_a_contact(tool_name: str, args: Mapping[str, Any], place: Here) -> bool:
-    """In a contact's chat, only reading and resolving that same conversation."""
+    """In a contact's chat, only asking in that same conversation, reading it and resolving it."""
+    if tool_name == ASK_HERE:
+        return place.in_agent_inbox
     if tool_name == READ:
         return _this_conversation(args, place, by_default=False)
     if tool_name == RESOLVE:
@@ -610,8 +680,8 @@ def _allowed_for_a_contact(tool_name: str, args: Mapping[str, Any], place: Here)
 
 
 def before_tool_call(tool_name: str = "", args: Any = None, **context: Any) -> Optional[Dict[str, Any]]:
-    """Hermes's `pre_tool_call` hook, for every tool call. In a contact's chat it lets through only reading and
-    resolving that conversation, asking the person, a plan, and what the operator lets contacts use; keys and Hermes's
+    """Hermes's `pre_tool_call` hook, for every tool call. In a contact's chat it lets through only asking in that
+    conversation, reading it and resolving it, a plan, and what the operator lets contacts use; keys and Hermes's
     own files stay closed there. A session at the full access of a contact isn't held back while it is their
     conversation's current one. From another app's chat, before agentinbox_send writes to
     anyone but the operator, it hands the call to Hermes's approval gate. Anything else goes on as it is. Hermes runs a
@@ -677,13 +747,13 @@ def _ask_before_writing(args: Mapping[str, Any], place: Here, adapter: Optional[
 def send(args: Dict[str, Any], place: Here) -> str:
     to_words = _text(args.get("to"), "to")
     text = _text(args.get("text"), "text")
-    answer = _answer(args, default="none")
+    answer = _answer(args, default="tell")
     adapter = _bound()
     _refuse_for_a_contact(adapter, place)
     to = _run(lambda api, adapter: _recipient(api, adapter, to_words))
     if _talking_with(place, to):
-        raise ToolError(f"You're talking with {to['name']} in this chat: your answer already goes to them. Use {SEND} "
-                        "only to write to someone else.")
+        raise ToolError(f"You're talking with {to['name']} in this chat: your answer already goes to them, and "
+                        f"{ASK_HERE} asks them something. Use {SEND} only to write to someone else.")
     if not to["isOperator"] and _operator_asks_first(adapter, place) and not _was_cleared(place, args):
         # The hook didn't hand this call to Hermes's approval gate, so the operator wasn't asked.
         raise ToolError("Your operator couldn't be asked to allow it, so nothing was sent.")
@@ -876,25 +946,43 @@ def _schema(name: str, description: str, properties: Dict[str, Any],
     return {"name": name, "description": description, "parameters": parameters}
 
 
-_CHOICES = {
-    "anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
-    "description": "With `answer: choose`: 2 to 10 short options, as buttons to pick one from.",
-}
+def _asking(kinds: List[str], first: str) -> Dict[str, Any]:
+    """`kind`, `options` and the Approve and Deny labels, as the CLI and the MCP server name them."""
+    said = {"tell": "tell: just a message", "ask": "ask: they answer in words",
+            "approve": "approve: Approve and Deny buttons", "choose": "choose: one of `options`"}
+    return {
+        "kind": {"type": "string", "enum": kinds,
+                 "description": ". ".join(said[kind] + (" (default)" if kind == first else "") for kind in kinds) + "."},
+        "options": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}],
+                    "description": "With `kind: choose`: 2 to 10 short options, as buttons to pick one from."},
+        "approve_label": {"type": "string", "description": "With `kind: approve`: the Approve button's words, e.g. "
+                                                           "“Ship it”. Default Approve."},
+        "deny_label": {"type": "string", "description": "With `kind: approve`: the Deny button's words, e.g. “Hold”. "
+                                                        "Default Deny."},
+    }
+
 
 _ASK_DESCRIPTION = (
     "Ask your operator, the person you work for, through Agent Inbox, and get their answer back. Use it from a "
     "scheduled job, the terminal, another app's chat or the conversation of a contact with full access, before you "
     "do something only your operator can decide. It returns at once; when your operator answers, even hours later, "
-    "the answer comes to you and you go on. Not in your operator's own Agent Inbox conversation: just ask in your "
-    "answer. In any other contact's, Agent Inbox is off."
+    "the answer comes to you and you go on. Not in your operator's own Agent Inbox conversation: ask them there with "
+    f"{ASK_HERE}. In any other contact's, Agent Inbox is off."
+)
+
+_ASK_HERE_DESCRIPTION = (
+    "Ask the people in the Agent Inbox conversation you're in something, there, and wait for the answer: words "
+    "(kind ask), Approve or Deny (kind approve), or one of a few options (kind choose). It waits up to 5 minutes; "
+    "without an answer by then, the question stays open, and the answer comes to you in this chat when they give it. "
+    f"Only in an Agent Inbox conversation; to ask your operator from anywhere else, use {ASK_OPERATOR}."
 )
 
 _SEND_DESCRIPTION = (
     "Write to your operator or to one of their contacts, in a new conversation on their usual channel. Your answer "
-    "in a chat already goes to the person there, so use this only for someone else. With `answer`, it asks a "
-    "question, and the answer comes back to you in the chat you asked from. Not in a contact's Agent Inbox "
-    "conversation, where Agent Inbox is off, unless your operator gave them full access. From another app's chat, "
-    "writing to anyone but your operator asks your operator first."
+    f"in a chat already goes to the person there, and {ASK_HERE} asks them something, so use this only for someone "
+    "else. With `kind`, it asks a question, and the answer comes back to you in the chat you asked from. Not in a "
+    "contact's Agent Inbox conversation, where Agent Inbox is off, unless your operator gave them full access. From "
+    "another app's chat, writing to anyone but your operator asks your operator first."
 )
 
 _RESOLVE_DESCRIPTION = (
@@ -912,19 +1000,18 @@ TOOLS: List[Tuple[Dict[str, Any], Callable[[Dict[str, Any], Here], str], str]] =
     (_schema(ASK_OPERATOR, _ASK_DESCRIPTION, {
         "question": {"type": "string", "description": "What to ask, as your operator should read it: say who wants "
                                                       "what, e.g. “Ben asks for a 10% discount on his order. OK?”"},
-        "answer": {"type": "string", "enum": ["text", "approve", "choose"],
-                   "description": "text: they write an answer (default). approve: Approve and Deny buttons. choose: "
-                                  "one of `choices`."},
-        "choices": _CHOICES,
+        **_asking(["ask", "approve", "choose"], "ask"),
     }, ["question"]), ask_operator, "🙋"),
+    (_schema(ASK_HERE, _ASK_HERE_DESCRIPTION, {
+        "question": {"type": "string", "description": "What to ask, as the people here should read it, e.g. "
+                                                      "“Deploy to staging?”"},
+        **_asking(["ask", "approve", "choose"], "ask"),
+    }, ["question"]), ask_here, "❓"),
     (_schema(SEND, _SEND_DESCRIPTION, {
         "to": {"type": "string", "description": "“operator”, or a contact's id, email or name, as "
                                                 f"{CONTACTS} lists them."},
         "text": {"type": "string", "description": "The message, as they should read it."},
-        "answer": {"type": "string", "enum": ["none", "text", "approve", "choose"],
-                   "description": "none: just a message (default). text: a question they answer in words. approve: "
-                                  "Approve and Deny buttons. choose: one of `choices`."},
-        "choices": _CHOICES,
+        **_asking(["tell", "ask", "approve", "choose"], "tell"),
     }, ["to", "text"]), send, "✉️"),
     (_schema(CONVERSATIONS, "List the agent's conversations, latest first: the id, who is in it, the channel, and the "
                             f"last message. {READ} shows one in full." + _NOT_FOR_CONTACTS, {

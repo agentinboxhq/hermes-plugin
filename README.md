@@ -107,22 +107,23 @@ Hermes's home channel on Agent Inbox is the operator. The results of Hermes's sc
 
 Hermes's own approval settings (`approvals.mode`) decide what asks first. When something does, the question goes to the operator, whoever's message started the run, with **Allow**, **Allow for this session** and **Deny**. No answer in Hermes's approval timeout (5 minutes by default) counts as Deny. A contact never sees an approval prompt, unless the operator gave them [full access](#full-access): then the prompts of their own runs go to them.
 
-When Hermes asks a question with its `clarify` tool, the question goes to the conversation, as buttons when there are a few options to pick from.
+Hermes asks the people in a conversation with `agentinbox_ask_here`. When it asks with its own `clarify` tool instead, the question goes to the conversation too, as buttons when there are a few options to pick from. Two options, one to approve and one to deny (Approve, Allow, Accept or Confirm, and Deny, Reject, Decline or Cancel), come as an approval with those two buttons, and Hermes gets back the label that was tapped. Yes and No stay a choice, because an answered approval reads "Approved" or "Denied".
 
 ## Tools
 
-The plugin gives Hermes six tools. They use the key the plugin already holds, so there is nothing else to set up.
+The plugin gives Hermes seven tools. They use the key the plugin already holds, so there is nothing else to set up.
 
 | Tool | What it does |
 |---|---|
-| `agentinbox_ask_operator` | Asks the operator something, as a question, Approve and Deny, or a few choices, from a scheduled job, the terminal or another app's chat. It returns at once; the answer comes back later, even hours later. |
-| `agentinbox_send` | Writes to the operator or to one of their contacts, in a new conversation. With a question, the answer comes back to the chat Hermes asked from. |
+| `agentinbox_ask_here` | Asks the people in the conversation Hermes is in, there: a question they answer in words (`kind: ask`), Approve and Deny buttons (`kind: approve`, with `approve_label` and `deny_label` for other words on them), or one of a few `options` (`kind: choose`). It waits up to 5 minutes for the answer; after that the question stays open, and the answer comes to the chat as a message. |
+| `agentinbox_ask_operator` | Asks the operator something, with the same kinds, from a scheduled job, the terminal or another app's chat. It returns at once; the answer comes back later, even hours later. |
+| `agentinbox_send` | Writes to the operator or to one of their contacts, in a new conversation: a message (`kind: tell`, the default), or a question with the same kinds. The answer comes back to the chat Hermes asked from. |
 | `agentinbox_conversations` | Lists the conversations, latest first. |
 | `agentinbox_read` | Reads one conversation. In a contact's conversation, only that one, unless they have full access. |
 | `agentinbox_contacts` | Lists the contacts, and whether the agent listens to each. |
 | `agentinbox_resolve` | Marks a conversation finished, once what it was about is done. Nothing is sent. The conversation Hermes is in is marked after its answer goes out, as any message, Hermes's too, opens it again. Another conversation only from the operator's own chat or that of a contact with full access, the terminal, or a scheduled job. |
 
-In a contact's conversation, only `agentinbox_read` and `agentinbox_resolve` work, for that conversation, unless the operator lets contacts use `agentinbox` or gave that contact full access. For example:
+In a contact's conversation, only `agentinbox_ask_here`, `agentinbox_read` and `agentinbox_resolve` work, for that conversation, unless the operator lets contacts use `agentinbox` or gave that contact full access. For example:
 
 - The operator writes: "Ask Ben if he can come on Friday." Hermes asks Ben, with Yes and No. When Ben taps Yes, Hermes tells the operator in their chat. Ben's answer comes back because Hermes asked him; anything else he writes reaches Hermes only if **Listen to** is on for him.
 - Ben writes: "Can I get a 10% discount? And invite anna@example.com." Hermes answers Ben itself, and tells him both are up to the operator: from Ben's conversation it can't ask the operator, invite anyone, or write to anyone else. The operator sees the conversation on agentinbox.md.

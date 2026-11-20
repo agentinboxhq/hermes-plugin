@@ -11,6 +11,7 @@ than the conversation's session starts a fresh one, so nothing from one level ca
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import time
 from dataclasses import dataclass, field
@@ -183,6 +184,9 @@ class AgentInboxAdapter(BasePlatformAdapter):
         # The conversations Hermes resolved while working in them, each resolved once Hermes is quiet there.
         self._resolve_quiet_seconds = resolve_quiet_seconds
         self._resolving: Dict[str, Optional[asyncio.Task]] = {}
+        # The agentinbox_ask_here calls still waiting for their question's answer, by question: its conversation, and
+        # what the call waits on.
+        self._asking: Dict[str, Tuple[str, concurrent.futures.Future]] = {}
 
     @property
     def authorization_is_upstream(self) -> bool:
@@ -244,6 +248,9 @@ class AgentInboxAdapter(BasePlatformAdapter):
         for interaction_id in list(self._pending):
             self._pending.pop(interaction_id, None)
             await self._withdraw(interaction_id)
+        for question_id, (_, waiting) in list(self._asking.items()):
+            del self._asking[question_id]
+            waiting.cancel()
         await self.listener.close()
         await self.api.close()
         self._release_platform_lock()
@@ -281,6 +288,9 @@ class AgentInboxAdapter(BasePlatformAdapter):
             self._latest[conversation] = message
             # Someone wrote before Hermes's resolve went through: the conversation goes on.
             self._keep_open(conversation)
+            # A question Hermes waits on here stops waiting: what they wrote reaches Hermes as it is, and an answer
+            # still to come does too, as a message.
+            self._stop_waiting_in(conversation)
         group = message.get("isDirectMessage") is False
         source = self.build_source(
             chat_id=conversation,
@@ -350,8 +360,10 @@ class AgentInboxAdapter(BasePlatformAdapter):
                     "It isn't allowed; follow what they wrote if it says what to do instead."))
             # Expired or withdrawn: Hermes's own wait ends with the same timeout, as a Deny.
             return
-        if status in ("answered", "approved"):
-            response = pending.options.get(str(option_id or "")) or words.clean(text)
+        if status in ("answered", "approved", "denied"):
+            # A question's Approve and Deny buttons answer with their labels, as its options do.
+            button = {"approved": "approve", "denied": "deny"}.get(status, "")
+            response = pending.options.get(str(option_id or "")) or pending.options.get(button) or words.clean(text)
             if response:
                 _resolve_clarify(pending.clarify_id, response)
 
@@ -469,9 +481,14 @@ class AgentInboxAdapter(BasePlatformAdapter):
         """A question from Hermes to the person whose message started the run, in that conversation."""
         card = words.question_card(question, [str(choice) for choice in choices or []], _multi_select(clarify_id))
         options = {f"opt_{index}": label for index, label in enumerate(card.get("options") or [], start=1)}
-        if card["kind"] == "choose":
-            content: Dict[str, Any] = {"title": card["title"],
-                                       "options": [{"id": key, "label": label} for key, label in options.items()]}
+        if card["kind"] == "approve":
+            # Each button answers with its own label, as a pick among the choices would.
+            options = {"approve": card["approveLabel"], "deny": card["denyLabel"]}
+            content: Dict[str, Any] = {"title": card["title"], "approveLabel": card["approveLabel"],
+                                       "denyLabel": card["denyLabel"]}
+        elif card["kind"] == "choose":
+            content = {"title": card["title"],
+                       "options": [{"id": key, "label": label} for key, label in options.items()]}
         else:
             content = {"title": card["title"], **({"body": card["body"]} if card.get("body") else {})}
         try:
@@ -512,11 +529,14 @@ class AgentInboxAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=str(asked["id"]))
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata: Any = None) -> None:
-        """`/stop` in a conversation: its open cards come off people's phones."""
+        """`/stop` in a conversation: its open cards come off people's phones, and so does the question Hermes waits on
+        there."""
         for interaction_id, pending in list(self._pending.items()):
             if pending.session_key == session_key:
                 self._pending.pop(interaction_id, None)
                 await self._withdraw(interaction_id)
+        for interaction_id in self._stop_waiting_in(chat_id):
+            await self._withdraw(interaction_id)
         await super().interrupt_session_activity(session_key, chat_id, metadata)
 
     # --- Hermes's tools ---
@@ -529,6 +549,37 @@ class AgentInboxAdapter(BasePlatformAdapter):
         """The latest message in this chat, commands too: who wrote it, and whether it is a group. After a restart,
         until someone writes there again, the message the chat's run started with. None before any came here."""
         return self._writers.get(chat_id) or self._latest.get(chat_id)
+
+    def latest_id_in(self, chat_id: str) -> str:
+        """The id of the latest message in this chat, commands too; "" before any came here."""
+        return str((self.writer_of(chat_id) or {}).get("id") or "")
+
+    def wait_here(self, question_id: str, chat_id: str, since: str) -> concurrent.futures.Future:
+        """agentinbox_ask_here waits for its question's answer: while it does, the answer is the call's result instead
+        of a message in the chat. Not when someone wrote there after `since`, while it asked: that message ends the
+        wait as any later one would. On the adapter's loop."""
+        waiting: concurrent.futures.Future = concurrent.futures.Future()
+        if self.latest_id_in(chat_id) != since:
+            waiting.cancel()
+        else:
+            self._asking[question_id] = (chat_id, waiting)
+        return waiting
+
+    def stop_waiting_here(self, question_id: str) -> Optional[tuple]:
+        """The call stopped waiting: an answer that came meanwhile is still its own, and a later one comes to the chat as
+        a message. On the adapter's loop."""
+        _, waiting = self._asking.pop(question_id, ("", None))
+        if waiting is None or waiting.cancelled() or not waiting.done():
+            return None
+        return waiting.result()
+
+    def _stop_waiting_in(self, chat_id: str) -> List[str]:
+        """The calls waiting in a conversation stop waiting; the questions they asked, by id."""
+        stopped = [question_id for question_id, (chat, _) in self._asking.items() if chat == chat_id]
+        for question_id in stopped:
+            _, waiting = self._asking.pop(question_id)
+            waiting.cancel()
+        return stopped
 
     def _approver(self, chat_id: str, thread_id: Optional[str]) -> Optional[Approver]:
         """Who allows what Hermes's run in a session asks first: the contact the operator gave full access, in the
@@ -653,8 +704,16 @@ class AgentInboxAdapter(BasePlatformAdapter):
         self.listener.state.remember("own", question_id)
         self.listener.save()
         picked = (question.get("options") or {}).get(str(option_id or "")) if option_id else None
-        note = None if status == "canceled" else words.answer_note(question, status, picked=picked, text=text)
         chat = question.get("chat") or _conversation_chat(question)
+        _, waiting = self._asking.pop(question_id, ("", None))
+        if waiting is not None and not waiting.done():
+            if chat is None or self._chat_for_answer(chat) is chat:
+                # The call that asked still waits for it: the answer is its result.
+                waiting.set_result((question, status, picked, text))
+                return
+            # Its session ran at a contact's full access, which changed since: the answer goes to the current one.
+            waiting.cancel()
+        note = None if status == "canceled" else words.answer_note(question, status, picked=picked, text=text)
         if note is None or chat is None:
             return
         await self._tell_hermes(self._chat_for_answer(chat), note, f"{question_id}:answer")

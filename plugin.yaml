@@ -6,19 +6,21 @@ description: >
   Agent Inbox for Hermes Agent. When your operator, or a contact your agent listens to, writes to your
   agent on Telegram, Slack or email, the message reaches Hermes within seconds and Hermes answers in the
   same conversation. Hermes's approval prompts go to the operator as Allow and Deny buttons. Its tools ask the
-  operator and bring the answer back to the chat, write to the operator's contacts, and read the conversations.
+  people in a conversation, ask the operator and bring the answer back to the chat, write to the operator's
+  contacts, and read the conversations.
 author: Agent Inbox
 homepage: https://agentinbox.md
 license: MIT
 tags: [agent-inbox, channel, telegram, slack, email, human-in-the-loop]
 provides_tools:
   - agentinbox_ask_operator
+  - agentinbox_ask_here
   - agentinbox_send
   - agentinbox_conversations
   - agentinbox_read
   - agentinbox_contacts
   - agentinbox_resolve
-# pre_tool_call keeps a contact's chat for talking: reading and resolving that same conversation, asking the person, a
+# pre_tool_call keeps a contact's chat for talking: asking in that same conversation, reading it and resolving it, a
 # plan, and only what the operator lets contacts use (platforms.agentinbox.contacts_can_use); keys and Hermes's own
 # files stay closed there. A contact the operator gave full access has everything in their own direct chat, judged
 # message by message. From another app's chat, agentinbox_send to anyone but the operator goes through Hermes's
