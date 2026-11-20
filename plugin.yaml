@@ -15,6 +15,7 @@ tags: [agent-inbox, channel, telegram, slack, email, human-in-the-loop]
 provides_tools:
   - agentinbox_ask_operator
   - agentinbox_ask_here
+  - agentinbox_card
   - agentinbox_send
   - agentinbox_conversations
   - agentinbox_read

@@ -111,11 +111,12 @@ Hermes asks the people in a conversation with `agentinbox_ask_here`. When it ask
 
 ## Tools
 
-The plugin gives Hermes seven tools. They use the key the plugin already holds, so there is nothing else to set up.
+The plugin gives Hermes eight tools. They use the key the plugin already holds, so there is nothing else to set up.
 
 | Tool | What it does |
 |---|---|
 | `agentinbox_ask_here` | Asks the people in the conversation Hermes is in, there: a question they answer in words (`kind: ask`), Approve and Deny buttons (`kind: approve`, with `approve_label` and `deny_label` for other words on them), or one of a few `options` (`kind: choose`). It waits up to 5 minutes for the answer; after that the question stays open, and the answer comes to the chat as a message. |
+| `agentinbox_card` | Shows the agent's card: what it says, its name, its email address and the link where anyone can reach it, as `agentinbox card` does in the CLI. The first showing is how agentinbox.md's onboarding sees the agent say hi. Off in a contact's conversation, since its greeting is for the operator. |
 | `agentinbox_ask_operator` | Asks the operator something, with the same kinds, from a scheduled job, the terminal or another app's chat. It returns at once; the answer comes back later, even hours later. |
 | `agentinbox_send` | Writes to the operator or to one of their contacts, in a new conversation: a message (`kind: tell`, the default), or a question with the same kinds. The answer comes back to the chat Hermes asked from. |
 | `agentinbox_conversations` | Lists the conversations, latest first. |

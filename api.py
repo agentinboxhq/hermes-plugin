@@ -226,6 +226,12 @@ class AgentInboxApi:
         contact (`to`)."""
         return await self._request("POST", "/v1/inbox/messages", json={**payload, **self._agent()})
 
+    async def show_card(self) -> Dict[str, Any]:
+        """Shows the agent's card to its operator: what the agent says, and what its card holds. The first showing is
+        kept on the agent, which is how agentinbox.md's onboarding sees it say hi."""
+        found = await self._request("POST", "/v1/agent/card", json=self._agent())
+        return found if isinstance(found, dict) else {}
+
     async def get_interaction(self, interaction_id: str) -> Dict[str, Any]:
         return await self._request("GET", f"/v1/inbox/messages/{quote(interaction_id, safe='')}")
 

@@ -359,6 +359,17 @@ def answer_note(question: Mapping[str, Any], status: str, *, picked: Optional[st
     return None
 
 
+def card_text(card: Mapping[str, Any]) -> str:
+    """The agent's card as Hermes says it: the greeting, then the name, the address and the link."""
+    name = clean(card.get("name")).strip()
+    lines = [clean(card.get("greeting")).strip(), "", name]
+    if card.get("address"):
+        lines.append(f"Email: {clean(card['address']).strip()}")
+    if card.get("url"):
+        lines.append(f"Card: {clean(card['url']).strip()} (anyone can email or message {name} from there)")
+    return "\n".join(lines)
+
+
 def here_answer(question: Mapping[str, Any], status: str, picked: Optional[str], text: Optional[str]) -> str:
     """What agentinbox_ask_here returns once someone in its conversation answered, while it waited."""
     who = clean(question.get("toName")).strip() or "They"

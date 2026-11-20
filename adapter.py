@@ -535,7 +535,7 @@ class AgentInboxAdapter(BasePlatformAdapter):
             if pending.session_key == session_key:
                 self._pending.pop(interaction_id, None)
                 await self._withdraw(interaction_id)
-        for interaction_id in self._stop_waiting_in(chat_id):
+        for interaction_id in self._stop_waiting_in(chat_id, withdrawn=True):
             await self._withdraw(interaction_id)
         await super().interrupt_session_activity(session_key, chat_id, metadata)
 
@@ -573,12 +573,16 @@ class AgentInboxAdapter(BasePlatformAdapter):
             return None
         return waiting.result()
 
-    def _stop_waiting_in(self, chat_id: str) -> List[str]:
-        """The calls waiting in a conversation stop waiting; the questions they asked, by id."""
+    def _stop_waiting_in(self, chat_id: str, *, withdrawn: bool = False) -> List[str]:
+        """The calls waiting in a conversation stop waiting; the questions they asked, by id. A question about to be
+        withdrawn, as by /stop, is the call's result as such; any other's answer still comes to the chat later."""
         stopped = [question_id for question_id, (chat, _) in self._asking.items() if chat == chat_id]
         for question_id in stopped:
             _, waiting = self._asking.pop(question_id)
-            waiting.cancel()
+            if withdrawn:
+                waiting.set_result((self.listener.state.waiting.get(question_id) or {}, "canceled", None, None))
+            else:
+                waiting.cancel()
         return stopped
 
     def _approver(self, chat_id: str, thread_id: Optional[str]) -> Optional[Approver]:

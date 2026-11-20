@@ -43,6 +43,7 @@ TOOLSET = "agentinbox"
 
 ASK_OPERATOR = "agentinbox_ask_operator"
 ASK_HERE = "agentinbox_ask_here"
+CARD = "agentinbox_card"
 SEND = "agentinbox_send"
 CONVERSATIONS = "agentinbox_conversations"
 READ = "agentinbox_read"
@@ -50,7 +51,7 @@ CONTACTS = "agentinbox_contacts"
 RESOLVE = "agentinbox_resolve"
 
 # This plugin's tools; in a contact's chat, only asking in that conversation, reading it and resolving it stay on.
-PLUGIN_TOOLS = (ASK_OPERATOR, ASK_HERE, SEND, CONVERSATIONS, READ, CONTACTS, RESOLVE)
+PLUGIN_TOOLS = (ASK_OPERATOR, ASK_HERE, CARD, SEND, CONVERSATIONS, READ, CONTACTS, RESOLVE)
 
 # What a card asks for, in the words of the CLI and the MCP server: `tell` nothing, `ask` words, `approve` Approve or
 # Deny, `choose` one of a few options.
@@ -62,6 +63,10 @@ ASK_HERE_WAIT_SECONDS = 5 * 60
 
 # Hermes's toolsets a contact's chat always has: asking the person something, and keeping a plan.
 CONTACT_TOOLSETS = ("clarify", "todo")
+
+# How Hermes looks up the tools it holds back until they're needed: reading what a tool does runs nothing, and the
+# call itself is judged by the tool it names.
+TOOL_LOOKUPS = ("tool_search", "tool_describe")
 
 # How long a send the hook handed to the approval gate may still run: longer than any approval waits.
 CLEARANCE_SECONDS = 30 * 60
@@ -599,6 +604,17 @@ def ask_here(args: Dict[str, Any], place: Here) -> str:
     return words.NO_ANSWER_YET if outcome is None else words.here_answer(*outcome)
 
 
+def card(args: Dict[str, Any], place: Here) -> str:
+    """Shows the agent's card, as `agentinbox card` does in the CLI and `agent_card` over MCP. Not in a contact's chat:
+    its greeting is for the operator, by their first name."""
+    _refuse_for_a_contact(_bound(), place)
+
+    async def work(api: AgentInboxApi, adapter: Optional[Any]) -> str:
+        return words.card_text(await api.show_card())
+
+    return _run(work)
+
+
 def _talking_with(place: Here, to: Mapping[str, Any]) -> bool:
     return place.in_agent_inbox and place.direct and to["id"] == place.user_id
 
@@ -655,7 +671,9 @@ def _server_name(name: str) -> str:
 
 def _contact_may_use(tool_name: str, can_use: tuple) -> bool:
     """Whether a contact's chat has this tool of Hermes's: one of the toolsets it always has, or of those the operator
-    lets contacts use, or a tool of an MCP server they name."""
+    lets contacts use, or a tool of an MCP server they name. Looking up a tool is always there."""
+    if tool_name in TOOL_LOOKUPS:
+        return True
     parts = guard.mcp_parts(tool_name)
     if parts is not None:
         return _server_name(parts[0]) in {_server_name(name) for name in can_use}
@@ -977,6 +995,13 @@ _ASK_HERE_DESCRIPTION = (
     f"Only in an Agent Inbox conversation; to ask your operator from anywhere else, use {ASK_OPERATOR}."
 )
 
+_CARD_DESCRIPTION = (
+    "Introduce yourself with your Agent Inbox card: your name, your email address, and the link where anyone can "
+    "email or message you. Call it when someone asks you to introduce yourself, to show or share your card, or who "
+    "you are on Agent Inbox. Say the greeting it returns in your answer, then show the card with its link. Not in a "
+    "contact's Agent Inbox conversation, unless your operator gave them full access."
+)
+
 _SEND_DESCRIPTION = (
     "Write to your operator or to one of their contacts, in a new conversation on their usual channel. Your answer "
     f"in a chat already goes to the person there, and {ASK_HERE} asks them something, so use this only for someone "
@@ -1007,6 +1032,7 @@ TOOLS: List[Tuple[Dict[str, Any], Callable[[Dict[str, Any], Here], str], str]] =
                                                       "“Deploy to staging?”"},
         **_asking(["ask", "approve", "choose"], "ask"),
     }, ["question"]), ask_here, "❓"),
+    (_schema(CARD, _CARD_DESCRIPTION, {}), card, "🪪"),
     (_schema(SEND, _SEND_DESCRIPTION, {
         "to": {"type": "string", "description": "“operator”, or a contact's id, email or name, as "
                                                 f"{CONTACTS} lists them."},

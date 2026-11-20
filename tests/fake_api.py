@@ -60,6 +60,8 @@ class FakeApi:
         self.unreachable: List[str] = []
         # The conversations resolved, in order, with what each call asked as.
         self.resolved: List[str] = []
+        # The bodies the card was shown with, each a showing.
+        self.cards_shown: List[Dict[str, Any]] = []
         self.resolved_as: List[Dict[str, str]] = []
         self._next = 0
 
@@ -135,6 +137,15 @@ class FakeApi:
             self.interactions[interaction["id"]] = interaction
             self.sent.append({**body, "id": interaction["id"]})
             return httpx.Response(201, json={"data": interaction})
+        if route == "POST /v1/agent/card":
+            self.cards_shown.append(body)
+            return httpx.Response(200, json={"data": {
+                "greeting": "Hi Ada, I’m JunoX. I have my own inbox now. Here’s my card, so people can email or "
+                            "message me directly.",
+                "name": "JunoX", "handle": "junox", "address": "junox@agentinbox.md",
+                "url": "https://agentinbox.md/p/junox", "operatorFirstName": "Ada",
+                "look": {"shape": "blob", "color": "amber", "art": {"kind": "rays", "seed": 7}},
+                "firstShown": len(self.cards_shown) == 1}})
         if route == "GET /v1/contacts":
             start = int(params.get("after") or 0)
             size = min(int(params.get("limit") or 50), self.contacts_page)

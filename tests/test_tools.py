@@ -125,10 +125,10 @@ def sent_to(fake: FakeApi, recipient: str) -> List[Dict[str, Any]]:
     return [each for each in fake.sent if each.get("to") == recipient]
 
 
-def test_the_plugin_registers_its_seven_tools():
-    assert sorted(REGISTERED.tools) == ["agentinbox_ask_here", "agentinbox_ask_operator", "agentinbox_contacts",
-                                        "agentinbox_conversations", "agentinbox_read", "agentinbox_resolve",
-                                        "agentinbox_send"]
+def test_the_plugin_registers_its_eight_tools():
+    assert sorted(REGISTERED.tools) == ["agentinbox_ask_here", "agentinbox_ask_operator", "agentinbox_card",
+                                        "agentinbox_contacts", "agentinbox_conversations", "agentinbox_read",
+                                        "agentinbox_resolve", "agentinbox_send"]
     assert {each["toolset"] for each in REGISTERED.tools.values()} == {"agentinbox"}
     assert REGISTERED.tools["agentinbox_send"]["schema"]["parameters"]["required"] == ["to", "text"]
     assert REGISTERED.hooks["pre_tool_call"] == [agent_tools.before_tool_call]
@@ -142,7 +142,8 @@ async def test_in_bens_chat_agent_inbox_is_off(fake, adapter, gate, monkeypatch)
                        ("agentinbox_send", {"to": "Anna", "text": "Ben says hi"}),
                        ("agentinbox_send", {"to": "operator", "text": "Ben says hi"}),
                        ("agentinbox_conversations", {}),
-                       ("agentinbox_contacts", {})):
+                       ("agentinbox_contacts", {}),
+                       ("agentinbox_card", {})):
         result = await call(monkeypatch, name, args, BENS_CHAT, gate)
         assert result.startswith(f"BLOCKED: {OFF_FOR_A_CONTACT}"), name
         assert "Don't look for another way to do it." in result
@@ -163,7 +164,8 @@ async def test_the_tools_refuse_for_a_contact_on_their_own_too(fake, adapter, mo
                        ("agentinbox_conversations", {}),
                        ("agentinbox_contacts", {}),
                        ("agentinbox_read", {"conversation": "conv_ada"}),
-                       ("agentinbox_resolve", {"conversation": "conv_ada"})):
+                       ("agentinbox_resolve", {"conversation": "conv_ada"}),
+                       ("agentinbox_card", {})):
         result = await call(monkeypatch, name, args, BENS_CHAT, hooks=False)
         assert OFF_FOR_A_CONTACT in result, name
     assert fake.sent == []
@@ -362,8 +364,18 @@ async def test_stop_takes_the_question_back(fake, adapter, monkeypatch):
     await until(lambda: adapter._asking)
     card = fake.last("approve")
     await adapter.interrupt_session_activity("sess_ada", "conv_ada")
-    assert (await asking).startswith("No answer yet.")
+    assert await asking == "The question was withdrawn before anyone answered."
     assert fake.interactions[card["id"]]["status"] == "canceled"
+
+
+async def test_hermes_shows_the_agents_card(fake, adapter, monkeypatch):
+    for place in (Here(surface="cli"), ADAS_CHAT):
+        shown = await call(monkeypatch, "agentinbox_card", {}, place)
+        assert shown == ("Hi Ada, I’m JunoX. I have my own inbox now. Here’s my card, so people can email or message "
+                         "me directly.\n\nJunoX\nEmail: junox@agentinbox.md\nCard: https://agentinbox.md/p/junox "
+                         "(anyone can email or message JunoX from there)")
+    # Each showing goes to the API, which keeps the first, for the onboarding.
+    assert len(fake.cards_shown) == 2
 
 
 async def test_asking_here_works_only_in_an_agent_inbox_conversation(fake, adapter, monkeypatch):
@@ -371,6 +383,17 @@ async def test_asking_here_works_only_in_an_agent_inbox_conversation(fake, adapt
         result = await call(monkeypatch, "agentinbox_ask_here", {"question": "OK?"}, place)
         assert "this isn't one. To ask your operator, use agentinbox_ask_operator." in result
     assert fake.sent == []
+
+
+async def test_a_contacts_chat_can_look_up_its_tools(fake, adapter, monkeypatch):
+    capture(adapter)
+    await adapter._on_message(message("m1", text="Can you ask me something?", **FROM_BEN))
+    # Hermes holds most tools back until the model looks them up: reading about one is no use of it.
+    assert await hook(monkeypatch, "tool_describe", {"names": ["agentinbox_ask_here"]}, BENS_CHAT) is None
+    assert await hook(monkeypatch, "tool_search", {"query": "ask"}, BENS_CHAT) is None
+    # The call itself is judged by the tool it names.
+    assert await hook(monkeypatch, "agentinbox_ask_here", {"question": "OK?"}, BENS_CHAT) is None
+    assert (await hook(monkeypatch, "terminal", {"command": "ls"}, BENS_CHAT))["action"] == "block"
 
 
 async def test_kinds_and_labels_are_the_clis(fake, adapter, monkeypatch):
