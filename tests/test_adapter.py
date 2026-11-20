@@ -719,6 +719,42 @@ async def test_full_access_confirms_go_to_the_contact(fake, confirms):
     assert confirms == [("sess_ben", "8", "once")]
 
 
+async def test_a_full_access_contacts_cards_are_never_looked_up(fake, resolved):
+    adapter = make(fake)
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Clean up the build", full_access=True, **BEN))
+    await adapter._send_exec_approval_prompt(approval(chat_id="conv_ben", thread=events[-1].source.thread_id))
+    card = fake.last("approve")
+    fake.answer(card["id"], "approved")
+
+    # Reading the card would mark its answer read, and the messages would then leave it out.
+    await asyncio.sleep(0.05)
+    assert resolved == []
+    assert [call for call in fake.calls if call.startswith("GET /v1/inbox/messages/")] == []
+
+    assert await adapter._on_answer(message("m9", answers=card["id"], answer={"status": "approved"},
+                                            full_access=True, **BEN))
+    assert resolved == [("approval", "sess_1", "once", None)]
+
+
+async def test_a_contacts_allow_after_full_access_went_off_is_a_deny(fake, resolved, confirms):
+    adapter = make(fake)
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Clean up the build", full_access=True, **BEN))
+    thread = events[-1].source.thread_id
+    await adapter._send_exec_approval_prompt(approval(chat_id="conv_ben", thread=thread))
+    allow = fake.last("approve")["id"]
+    confirm = await adapter.send_slash_confirm(chat_id="conv_ben", title="/new", message=NEW_PROMPT,
+                                               session_key="sess_1", confirm_id="7", metadata={"thread_id": thread})
+
+    # The operator turned it off before Ben tapped: the messages with his taps say so.
+    assert await adapter._on_answer(message("m8", answers=allow, answer={"status": "approved"}, **BEN))
+    assert await adapter._on_answer(message("m9", answers=confirm.message_id, answer={"status": "approved"}, **BEN))
+    assert resolved == [("approval", "sess_1", "deny",
+                         "Ben allowed it after their full access was turned off, so it isn't allowed.")]
+    assert confirms == [("sess_1", "7", "cancel")]
+
+
 async def test_turning_full_access_off_withdraws_the_old_sessions_cards(fake, resolved, confirms):
     adapter = make(fake)
     events = capture(adapter)

@@ -113,6 +113,11 @@ def sentence_start(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+def allowed_without_full_access(who: str) -> str:
+    """Why a contact's Allow doesn't count: their operator turned their full access off before they tapped it."""
+    return f"{sentence_start(who)} allowed it after their full access was turned off, so it isn't allowed."
+
+
 def too_long_to_ask(who: str = "your operator") -> str:
     """Why a command too long to show whole on a card isn't allowed: whoever allows it would allow what they never
     read."""

@@ -83,7 +83,7 @@ On agentinbox.md, the operator can turn on **Full access** on a contact's card. 
 
 A message from that contact, in their own direct conversation, starts Hermes with no contact limits: exactly what the operator's own chat gets. That means all of Hermes's tools, MCP servers and skills, files and the terminal, the agent's key in `~/.agentinbox`, any `.env`, Hermes's own files and the operator's memory. `contacts_can_use` doesn't apply to them. Their commands work there as the operator's do (`/new`, `/yolo`, …), Agent Inbox's tools write to other contacts and read other conversations as in the operator's own chat, and Hermes reads their words as from someone the operator trusts.
 
-Approvals in their runs go to that contact, in their own conversation, never to the operator: Hermes's approval prompts and the confirmation of commands such as `/new`. `agentinbox_ask_operator` still asks the operator.
+Approvals in their runs go to that contact, in their own conversation, never to the operator: Hermes's approval prompts and the confirmation of commands such as `/new`. Their Allow counts only while their full access is still on. `agentinbox_ask_operator` still asks the operator.
 
 A group stays limited, also for them, and so does a scheduled job set up from their conversation. The switch counts message by message: once the operator turns it off, the contact's next message gets a contact's limits again, the run already going on loses full access too, and approval cards still waiting in the old session are withdrawn.
 

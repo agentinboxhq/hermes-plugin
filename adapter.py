@@ -67,6 +67,9 @@ class Pending:
     options: Dict[str, str] = field(default_factory=dict)  # option id -> its label
     # Whom an approval or a confirmation asks, as Hermes reads them in a sentence.
     asked: str = "your operator"
+    # The contact with full access an approval or a confirmation asks, by id; None for the operator. Their answer
+    # counts only with the message that brings it, which says whether they still have full access.
+    contact: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,11 @@ class Approver:
     @property
     def address(self) -> Dict[str, str]:
         return {"to": self.id, **({"thread": self.thread} if self.thread else {})}
+
+    @property
+    def contact(self) -> Optional[str]:
+        """The contact with full access, by id; None for the operator."""
+        return self.id if self.thread else None
 
 
 def _may_name_mcp_server(name: str) -> bool:
@@ -319,6 +327,13 @@ class AgentInboxAdapter(BasePlatformAdapter):
         text = answer.get("text") or message.get("text")
         pending = self._pending.pop(answers, None)
         if pending is not None:
+            if pending.contact and status == "approved" and not words.full_access(message):
+                # The operator turned their full access off before they tapped: the message with the tap says so.
+                logger.warning("[Agent Inbox] %s allowed a card without full access: denied.", pending.contact)
+                if pending.kind == "approval":
+                    _resolve_approval(pending.session_key, "deny", words.allowed_without_full_access(pending.asked))
+                    return True
+                status = "denied"
             await self._settle(pending, status, answer.get("optionId"), text)
             return True
         if answers in self.listener.state.waiting:
@@ -472,7 +487,7 @@ class AgentInboxAdapter(BasePlatformAdapter):
                               f"{words.sentence_start(approver.who)} couldn't be asked, so it isn't allowed.")
             return SendResult(success=True)
         self._watch(str(asked["id"]), Pending(kind="approval", session_key=prompt.session_key, chat_id=prompt.chat_id,
-                                              asked=approver.who))
+                                              asked=approver.who, contact=approver.contact))
         logger.info("[Agent Inbox] Asked %s to allow `%s`.", approver.who, words.clean(prompt.command)[:200])
         return SendResult(success=True, message_id=str(asked["id"]))
 
@@ -525,7 +540,7 @@ class AgentInboxAdapter(BasePlatformAdapter):
             logger.error("[Agent Inbox] Couldn't ask %s to confirm %s: %s", approver.who, title, exc)
             return SendResult(success=False, error=str(exc), retryable=exc.outage)
         self._watch(str(asked["id"]), Pending(kind="confirm", session_key=session_key, chat_id=chat_id,
-                                              confirm_id=confirm_id, asked=approver.who))
+                                              confirm_id=confirm_id, asked=approver.who, contact=approver.contact))
         return SendResult(success=True, message_id=str(asked["id"]))
 
     async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata: Any = None) -> None:
@@ -776,7 +791,11 @@ class AgentInboxAdapter(BasePlatformAdapter):
         contact the agent doesn't listen to."""
         while self._pending or self.listener.state.waiting:
             await asyncio.sleep(self._answer_poll_seconds)
-            for interaction_id in list(self._pending):
+            for interaction_id, waiting in list(self._pending.items()):
+                if waiting.contact:
+                    # Reading the card would mark its answer read, and the messages would then leave it out. The
+                    # contact is listened to, so it comes with them; Hermes's own wait ends one that never comes.
+                    continue
                 try:
                     asked = await self.api.get_interaction(interaction_id)
                 except ApiError:
