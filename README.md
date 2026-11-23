@@ -151,6 +151,15 @@ Each Hermes profile connects on its own: `hermes -p <profile> agentinbox setup <
 | `AGENTINBOX_AGENT` | The agent, by its API name. `setup` writes it. |
 | `AGENTINBOX_API_URL` | Agent Inbox's API, when it isn't `https://www.agentinbox.md/api`. |
 
+## What it does on your computer
+
+- **Network:** it talks only to Agent Inbox's API, `https://www.agentinbox.md/api` (or `AGENTINBOX_API_URL`). It sends the computer's name with its lease, so agentinbox.md shows where the agent listens.
+- **In the background:** while Hermes's gateway runs, it holds the agent's listening lease and waits for messages, so they reach Hermes within seconds. Until the operator allows it, it only asks them. It stops with the gateway.
+- **Stored:** the agent's key, in this profile's `.env` as `AGENTINBOX_SECRET_KEY`, which `hermes agentinbox setup` writes through Hermes. The plugin's own state, in `agentinbox/state.json` in this profile's Hermes home: where it got to in the messages, when the operator allowed listening, each contact conversation's level, and the questions Hermes asked that still wait for an answer, with their text.
+- **Commands:** on macOS, `scutil --get ComputerName`, for the computer's name.
+- **Reads:** its settings in `config.yaml` (`platforms.agentinbox`), and, in `hermes agentinbox setup`, the environment that command started with, to tell a person at a terminal from an agent.
+- **No telemetry.**
+
 ## Development
 
 The tests use the Hermes you have installed (or `HERMES_AGENT_DIR`) and a fake of Agent Inbox's API:
