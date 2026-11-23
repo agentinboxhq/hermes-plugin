@@ -15,6 +15,7 @@ import concurrent.futures
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
@@ -26,7 +27,7 @@ from .api import AgentInboxApi, ApiError
 from .computer import computer_name
 from .listener import Listener, StopForGood, Timing
 from .settings import HOST_NAME, OPERATOR_HOME, PLATFORM_NAME, contacts_can_use, read_settings, state_dir
-from .state import FULL, LIMITED, StateStore, new_level_token, round_thread, session_thread, thread_level
+from .state import FULL, LIMITED, StateStore, new_level_token, round_of, round_thread, session_thread, thread_level
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,27 @@ def _conversation_chat(question: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     asked = {"id": question.get("to"), "name": question.get("toName"), "isOperator": bool(question.get("toOperator"))}
     return {"chat_id": conversation, "chat_type": "dm", "thread_id": None, "user_id": question.get("to") or None,
             "user_name": None, "chat_name": conversation, "starter": {"from": asked, "channel": "", "text": ""}}
+
+
+def _answer_waits_for_message(question: Dict[str, Any]) -> bool:
+    """Whether the answer to a question Hermes asked with its tools counts only with the message that brings it, as a
+    full-access contact's cards do: one it asked that contact, in their own session at full access. Their message says
+    whether they still have it; looking the question up would mark its answer read, and the messages would then leave
+    it out."""
+    chat = question.get("chat") or {}
+    asked = str(question.get("to") or "")
+    return thread_level(chat.get("thread_id"))[0] == FULL and not question.get("toOperator") and bool(asked) and \
+        asked == str(chat.get("user_id") or "")
+
+
+def _past(stamp: Any) -> bool:
+    """Whether a time Agent Inbox gave is behind us; an empty or unreadable one never is."""
+    if not isinstance(stamp, str) or not stamp:
+        return False
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
 
 
 def _multi_select(clarify_id: str) -> bool:
@@ -326,6 +348,9 @@ class AgentInboxAdapter(BasePlatformAdapter):
         status = str(answer.get("status") or "answered")
         text = answer.get("text") or message.get("text")
         pending = self._pending.pop(answers, None)
+        # An answer shows its contact's full access as their message does: once it shows it off, every session of
+        # theirs has a contact's limits, the one that asked too.
+        await self._full_access_off_by(message)
         if pending is not None:
             if pending.contact and status == "approved" and not words.full_access(message):
                 # The operator turned their full access off before they tapped: the message with the tap says so.
@@ -337,7 +362,7 @@ class AgentInboxAdapter(BasePlatformAdapter):
             await self._settle(pending, status, answer.get("optionId"), text)
             return True
         if answers in self.listener.state.waiting:
-            await self._answered(answers, status, answer.get("optionId"), text)
+            await self._answered(answers, status, answer.get("optionId"), text, message)
             return True
         return False
 
@@ -641,25 +666,63 @@ class AgentInboxAdapter(BasePlatformAdapter):
         if sender.get("isOperator") or message.get("isDirectMessage") is False:
             return session_thread(round_number)
         level = FULL if words.full_access(message) else LIMITED
-        current = self.level_of(conversation)
-        if current is None and level == LIMITED:
+        if self.level_of(conversation) is None and level == LIMITED:
             return session_thread(round_number)  # never had full access: its sessions go on as before
-        current = dict(current or {"level": LIMITED, "since": ""})
+        return await self._take_level(conversation, level, round_number, str(sender.get("id") or ""),
+                                      words.clean(sender.get("name")).strip())
+
+    async def _take_level(self, conversation: str, level: str, round_number: int, person: str, name: str) -> str:
+        """A contact's conversation at the level their message, or Agent Inbox, says it has now, and the thread of its
+        session at that level. A change starts a fresh session, and the cards still waiting in the old one are
+        withdrawn."""
+        current = dict(self.level_of(conversation) or {"level": LIMITED, "since": ""})
         changed = current.get("level") != level
         if changed:
             current = {"level": level, "since": new_level_token()}
-        name = words.clean(sender.get("name")).strip()
-        current.update(thread=session_thread(round_number, level, current["since"]),
-                       person=str(sender.get("id") or ""), name=name)
+        current.update(thread=session_thread(round_number, level, current["since"]), person=person, name=name)
         self.listener.state.set_level(conversation, current)
         if changed:
             self.listener.save()
-            logger.info("[Agent Inbox] %s is at %s access in %s now: a fresh session.", sender.get("id"), level,
-                        conversation)
+            logger.info("[Agent Inbox] %s is at %s access in %s now: a fresh session.", person, level, conversation)
             await self._withdraw_cards(conversation, (
                 f"{name or 'The contact'}'s full access was turned {'on' if level == FULL else 'off'}, so their "
                 "conversation moved to a fresh session: it isn't allowed in this one."))
         return current["thread"]
+
+    async def _full_access_off_by(self, message: Dict[str, Any]) -> None:
+        """A contact's answer in their own direct conversation takes their full access away once it shows it off, as
+        their next message would. It never brings it: only their message does."""
+        conversation = str(message.get("conversationId") or "")
+        sender = message.get("from") or {}
+        person = str(sender.get("id") or "")
+        current = self.level_of(conversation)
+        if words.full_access(message) or sender.get("isOperator") or message.get("isDirectMessage") is False or \
+                current is None or current.get("level") != FULL or str(current.get("person") or "") != person:
+            return
+        await self._take_level(conversation, LIMITED, int(message.get("round") or 0), person,
+                               words.clean(sender.get("name")).strip())
+
+    async def _session_for_answer(self, chat: Dict[str, Any], message: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """The session an answer to Hermes's own question goes to (`_chat_for_answer`). One that ran at full access
+        goes on only while its contact still has it: their own answer says so (`_full_access_off_by`); for anyone
+        else's answer, and one looked up, Agent Inbox says. When it can't, the answer goes to the round's first
+        session, at a contact's limits."""
+        chat_id = str(chat.get("chat_id") or "")
+        thread = chat.get("thread_id")
+        current = self.full_access_session(chat_id, thread)
+        person = str((current or {}).get("person") or "")
+        sender = (message or {}).get("from") or {}
+        if current is not None and not (message is not None and str(sender.get("id") or "") == person):
+            try:
+                found = await self.api.get_contact(person)
+            except ApiError as exc:
+                logger.warning("[Agent Inbox] Couldn't check that %s still has full access (%s): taken as off.",
+                               person, exc)
+                return {**chat, "thread_id": round_thread(thread)}
+            if found.get("fullAccess") is not True:
+                await self._take_level(chat_id, LIMITED, round_of(current.get("thread")), person,
+                                       str(current.get("name") or ""))
+        return self._chat_for_answer(chat)
 
     def _chat_for_answer(self, chat: Dict[str, Any]) -> Dict[str, Any]:
         """The session an answer to Hermes's own question goes to: the one that asked, at its level. When that one ran
@@ -715,7 +778,10 @@ class AgentInboxAdapter(BasePlatformAdapter):
         except ApiError as exc:
             logger.warning("[Agent Inbox] Couldn't resolve %s: %s", chat_id, exc)
 
-    async def _answered(self, question_id: str, status: str, option_id: Optional[str], text: Optional[str]) -> None:
+    async def _answered(self, question_id: str, status: str, option_id: Optional[str], text: Optional[str],
+                        message: Optional[Dict[str, Any]] = None) -> None:
+        """The answer to a question Hermes asked with its tools, as `message` brings it, or as it was looked up when
+        there is none: the result of the call still waiting for it, or else a message in the chat that asked."""
         question = self.listener.state.waiting.pop(question_id, None)
         if question is None:
             return
@@ -724,18 +790,19 @@ class AgentInboxAdapter(BasePlatformAdapter):
         self.listener.save()
         picked = (question.get("options") or {}).get(str(option_id or "")) if option_id else None
         chat = question.get("chat") or _conversation_chat(question)
+        target = await self._session_for_answer(chat, message) if chat is not None else None
         _, waiting = self._asking.pop(question_id, ("", None))
         if waiting is not None and not waiting.done():
-            if chat is None or self._chat_for_answer(chat) is chat:
+            if chat is None or target is chat:
                 # The call that asked still waits for it: the answer is its result.
                 waiting.set_result((question, status, picked, text))
                 return
-            # Its session ran at a contact's full access, which changed since: the answer goes to the current one.
+            # Its session ran at a contact's full access, which is off now: the answer goes to another session.
             waiting.cancel()
         note = None if status == "canceled" else words.answer_note(question, status, picked=picked, text=text)
-        if note is None or chat is None:
+        if note is None or target is None:
             return
-        await self._tell_hermes(self._chat_for_answer(chat), note, f"{question_id}:answer")
+        await self._tell_hermes(target, note, f"{question_id}:answer")
 
     async def _tell_hermes(self, chat: Dict[str, Any], text: str, message_id: str) -> None:
         """A message to Hermes in one of its Agent Inbox chats, from the plugin itself."""
@@ -813,7 +880,12 @@ class AgentInboxAdapter(BasePlatformAdapter):
                 await self._poll_waiting()
 
     async def _poll_waiting(self) -> None:
-        for question_id in list(self.listener.state.waiting):
+        for question_id, question in list(self.listener.state.waiting.items()):
+            if _answer_waits_for_message(question):
+                # Never looked up, as a full-access contact's cards aren't: past its time, nothing answers it.
+                if _past(question.get("expiresAt")):
+                    self._forget(question_id)
+                continue
             try:
                 asked = await self.api.get_interaction(question_id)
             except ApiError as exc:
@@ -826,6 +898,16 @@ class AgentInboxAdapter(BasePlatformAdapter):
             if status != "pending":
                 response = asked.get("response") or {}
                 await self._answered(question_id, status, response.get("optionId"), response.get("text"))
+
+    def _forget(self, question_id: str) -> None:
+        """A question Hermes asked with its tools that nothing answers any more: an answer, if one comes, starts
+        nothing."""
+        self.listener.state.waiting.pop(question_id, None)
+        self.listener.state.remember("own", question_id)
+        self.listener.save()
+        _, waiting = self._asking.pop(question_id, ("", None))
+        if waiting is not None and not waiting.done():
+            waiting.cancel()
 
     async def _withdraw(self, interaction_id: str) -> None:
         try:

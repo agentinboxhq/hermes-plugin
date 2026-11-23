@@ -1,7 +1,7 @@
 name: agentinbox
 label: Agent Inbox
 kind: platform
-version: 0.1.0
+version: 0.1.1
 description: >
   Agent Inbox for Hermes Agent. When your operator, or a contact your agent listens to, writes to your
   agent on Telegram, Slack or email, the message reaches Hermes within seconds and Hermes answers in the

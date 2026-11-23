@@ -85,7 +85,7 @@ A message from that contact, in their own direct conversation, starts Hermes wit
 
 Approvals in their runs go to that contact, in their own conversation, never to the operator: Hermes's approval prompts and the confirmation of commands such as `/new`. Their Allow counts only while their full access is still on. `agentinbox_ask_operator` still asks the operator.
 
-A group stays limited, also for them, and so does a scheduled job set up from their conversation. The switch counts message by message: once the operator turns it off, the contact's next message gets a contact's limits again, the run already going on loses full access too, and approval cards still waiting in the old session are withdrawn.
+A group stays limited, also for them, and so does a scheduled job set up from their conversation. The switch counts message by message: once the operator turns it off, the contact's next message gets a contact's limits again, the run already going on loses full access too, and approval cards still waiting in the old session are withdrawn. Their answers count the same way: an answer of theirs that shows the switch off takes full access away at once, and before anyone else's answer goes on in a session at full access, the plugin asks Agent Inbox whether it's still on.
 
 Turning it on or off starts a fresh session with the next message, so nothing from one level carries into the other.
 

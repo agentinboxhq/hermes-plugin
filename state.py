@@ -67,6 +67,15 @@ def round_thread(thread_id: Optional[str]) -> Optional[str]:
     return first if first.startswith(ROUND_THREAD) else None
 
 
+def round_of(thread_id: Optional[str]) -> int:
+    """The round a session's thread is in: 0 for a conversation's first."""
+    first = round_thread(thread_id)
+    try:
+        return int(first[len(ROUND_THREAD):]) if first else 0
+    except ValueError:
+        return 0
+
+
 @dataclass
 class State:
     # This gateway as a computer the lease names, kept for good: the API knows it again after a restart or a new key.
