@@ -9,7 +9,7 @@ from urllib.parse import quote, urlparse
 
 from .settings import DEFAULT_AGENT, HOST_ID
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 
 # The longest the server holds one wait for messages, in seconds (the API's own limit).
 MAX_WAIT_SECONDS = 25
@@ -266,3 +266,9 @@ class AgentInboxApi:
                             after: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """The operator's contacts, the operator among them."""
         return await self._page("/v1/contacts", {"limit": limit, "after": after})
+
+    async def get_contact(self, contact_id: str) -> Dict[str, Any]:
+        """One contact as Agent Inbox has them now: whether the agent listens to them, and whether they have full
+        access."""
+        found = await self._request("GET", f"/v1/contacts/{quote(contact_id, safe='')}", params=self._agent())
+        return found if isinstance(found, dict) else {}

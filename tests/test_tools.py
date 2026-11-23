@@ -809,6 +809,8 @@ async def test_a_tool_whose_check_fails_refuses_too(fake, adapter, monkeypatch):
 # --- a contact the operator gave full access ---
 
 FROM_BEN_FULL = dict(FROM_BEN, full_access=True)
+# Ben as Agent Inbox lists him while his operator gives him full access.
+BEN_FULL_ACCESS = {**BEN, "fullAccess": True}
 
 
 def session_of(event: Any) -> Here:
@@ -863,6 +865,7 @@ async def test_full_access_writes_and_reads_as_the_operators_chat_does(fake, ada
 
 
 async def test_with_full_access_asking_the_operator_still_asks_the_operator(fake, adapter, monkeypatch):
+    fake.contacts = [ADA, BEN_FULL_ACCESS, ANNA]
     events = capture(adapter)
     await adapter._on_message(message("m1", text="Can I get 10% off?", **FROM_BEN_FULL))
     ben = session_of(events[-1])
@@ -877,10 +880,11 @@ async def test_with_full_access_asking_the_operator_still_asks_the_operator(fake
     assert card["card"]["body"] == "For Ben’s message on Telegram: “Can I get 10% off?”"
     fake.answer(card["id"], "approved")
     await until(lambda: len(events) == 2)
-    # The answer comes back to the session that asked, at its level.
+    # The answer comes back to the session that asked, at its level, while Agent Inbox says Ben still has it.
     assert events[-1].source.thread_id == ben.thread_id
     assert events[-1].text.startswith("Agent Inbox: Your operator approved: “Ben asks for 10% off. OK?”")
     assert await hook(monkeypatch, "terminal", {"command": "ls"}, session_of(events[-1])) is None
+    assert "GET /v1/contacts/sub_ben" in fake.calls
 
 
 async def test_turning_full_access_off_takes_it_from_the_old_session_at_once(fake, adapter, monkeypatch):
@@ -958,6 +962,7 @@ async def test_an_answer_never_brings_back_full_access_the_switch_took(fake, ada
 
 
 async def test_after_a_restart_an_answer_still_finds_full_access(fake, adapter, monkeypatch):
+    fake.contacts = [ADA, BEN_FULL_ACCESS, ANNA]
     events = capture(adapter)
     await adapter._on_message(message("m1", text="Ask Anna if she's in on Friday", **FROM_BEN_FULL))
     ben = session_of(events[-1])
@@ -973,6 +978,101 @@ async def test_after_a_restart_an_answer_still_finds_full_access(fake, adapter, 
 
     assert events[-1].source.thread_id == ben.thread_id
     assert await hook(monkeypatch, "terminal", {"command": "ls"}, session_of(events[-1])) is None
+
+
+async def test_bens_answer_in_his_full_access_chat_comes_only_with_his_message(fake, adapter, monkeypatch):
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Help me pick", **FROM_BEN_FULL))
+    asking = ask_here(monkeypatch, {"question": "Which branch?", "options": ["main", "staging"]},
+                      session_of(events[-1]))
+    await until(lambda: adapter._asking)
+    card = fake.last("choose")
+    fake.answer(card["id"], "answered", option_id="opt_2")
+
+    # Looking it up would mark its answer read, and the messages would then leave it out.
+    await asyncio.sleep(0.05)
+    assert f"GET /v1/inbox/messages/{card['id']}" not in fake.calls
+    picked = {"status": "answered", "optionId": "opt_2"}
+    assert await adapter._on_answer(message("m2", answers=card["id"], answer=picked, **FROM_BEN_FULL))
+    assert "“staging”" in await asking
+
+
+async def test_bens_answer_that_shows_his_full_access_off_goes_to_a_fresh_session(fake, adapter, monkeypatch):
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Help me pick", **FROM_BEN_FULL))
+    full = session_of(events[-1])
+    asking = ask_here(monkeypatch, {"question": "Which branch?", "options": ["main", "staging"]}, full)
+    await until(lambda: adapter._asking)
+    card = fake.last("choose")
+
+    # The operator turned it off before he tapped: his answer isn't the call's, and goes to a fresh session at a
+    # contact's limits, as his next message would.
+    picked = {"status": "answered", "optionId": "opt_2"}
+    assert await adapter._on_answer(message("m2", answers=card["id"], answer=picked, **FROM_BEN))
+    assert (await asking).startswith("No answer yet.")
+    await until(lambda: len(events) == 2)
+    limited = session_of(events[-1])
+    assert limited.thread_id != full.thread_id
+    assert events[-1].text.startswith("Agent Inbox:")
+    for session in (full, limited):
+        assert (await hook(monkeypatch, "terminal", {"command": "ls"}, session))["action"] == "block"
+
+
+async def test_an_answer_from_someone_else_goes_on_at_full_access_only_while_agent_inbox_says_so(fake, adapter,
+                                                                                              monkeypatch):
+    fake.contacts = [ADA, BEN_FULL_ACCESS, ANNA]
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Can I get 10% off?", **FROM_BEN_FULL))
+    full = session_of(events[-1])
+    await call(monkeypatch, "agentinbox_ask_operator", {"question": "Ben asks for 10% off. OK?", "kind": "approve"},
+               full)
+
+    # The operator turns Ben's full access off on the dashboard, then approves. Ben hasn't written since.
+    fake.contacts = [ADA, BEN, ANNA]
+    fake.answer(fake.last("approve")["id"], "approved")
+    await until(lambda: len(events) == 2)
+
+    limited = session_of(events[-1])
+    assert limited.thread_id != full.thread_id
+    for session in (full, limited):
+        assert (await hook(monkeypatch, "terminal", {"command": "ls"}, session))["action"] == "block"
+
+
+async def test_when_agent_inbox_cant_say_an_answer_goes_to_a_session_at_a_contacts_limits(fake, adapter, monkeypatch):
+    fake.contacts = [ADA, BEN_FULL_ACCESS, ANNA]
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Ask Anna if she's in on Friday", **FROM_BEN_FULL))
+    full = session_of(events[-1])
+    await call(monkeypatch, "agentinbox_send", {"to": "Anna", "text": "Are you in on Friday?", "kind": "ask"}, full)
+    fake.fail("GET /v1/contacts/sub_ben", 503)
+
+    assert await adapter._on_answer(message("m2", answers=fake.last("ask")["id"], text="Yes",
+                                            conversation="conv_with_sub_anna", operator=False, name="Anna Lee",
+                                            sender="sub_anna"))
+    assert len(events) == 2
+    assert events[-1].source.thread_id != full.thread_id
+    assert (await hook(monkeypatch, "terminal", {"command": "ls"}, session_of(events[-1])))["action"] == "block"
+    # Not known to be off either: Ben's level stays as his messages last said.
+    assert adapter.level_of("conv_ben")["level"] == "full"
+
+
+async def test_an_answer_to_hermess_own_question_takes_full_access_away_before_the_run_goes_on(fake, adapter,
+                                                                                              monkeypatch):
+    import agentinbox_plugin.adapter as adapter_module
+
+    answered = []
+    monkeypatch.setattr(adapter_module, "_resolve_clarify", lambda clarify_id, response: answered.append(response))
+    events = capture(adapter)
+    await adapter._on_message(message("m1", text="Which branch is live?", **FROM_BEN_FULL))
+    full = session_of(events[-1])
+    await adapter.send_clarify("conv_ben", "Which branch?", ["main", "staging"], "clar_1", full.session_key)
+
+    # The operator turned it off before Ben answered: the run that asked has a contact's limits when it goes on.
+    assert await adapter._on_answer(message("m2", answers=fake.last("choose")["id"],
+                                            answer={"status": "answered", "optionId": "opt_1"}, **FROM_BEN))
+    assert answered == ["main"]
+    assert adapter.level_of("conv_ben")["level"] == "limited"
+    assert (await hook(monkeypatch, "terminal", {"command": "ls"}, full))["action"] == "block"
 
 
 async def test_a_job_set_up_from_a_full_access_chat_has_a_contacts_limits(fake, adapter, monkeypatch):

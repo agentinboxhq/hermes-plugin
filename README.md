@@ -85,7 +85,7 @@ A message from that contact, in their own direct conversation, starts Hermes wit
 
 Approvals in their runs go to that contact, in their own conversation, never to the operator: Hermes's approval prompts and the confirmation of commands such as `/new`. Their Allow counts only while their full access is still on. `agentinbox_ask_operator` still asks the operator.
 
-A group stays limited, also for them, and so does a scheduled job set up from their conversation. The switch counts message by message: once the operator turns it off, the contact's next message gets a contact's limits again, the run already going on loses full access too, and approval cards still waiting in the old session are withdrawn.
+A group stays limited, also for them, and so does a scheduled job set up from their conversation. The switch counts message by message: once the operator turns it off, the contact's next message gets a contact's limits again, the run already going on loses full access too, and approval cards still waiting in the old session are withdrawn. Their answers count the same way: an answer of theirs that shows the switch off takes full access away at once, and before anyone else's answer goes on in a session at full access, the plugin asks Agent Inbox whether it's still on.
 
 Turning it on or off starts a fresh session with the next message, so nothing from one level carries into the other.
 
@@ -150,6 +150,15 @@ Each Hermes profile connects on its own: `hermes -p <profile> agentinbox setup <
 | `AGENTINBOX_SECRET_KEY` | The agent's key. `setup` writes it. |
 | `AGENTINBOX_AGENT` | The agent, by its API name. `setup` writes it. |
 | `AGENTINBOX_API_URL` | Agent Inbox's API, when it isn't `https://www.agentinbox.md/api`. |
+
+## What it does on your computer
+
+- **Network:** it talks only to Agent Inbox's API, `https://www.agentinbox.md/api` (or `AGENTINBOX_API_URL`). It sends the computer's name with its lease, so agentinbox.md shows where the agent listens.
+- **In the background:** while Hermes's gateway runs, it holds the agent's listening lease and waits for messages, so they reach Hermes within seconds. Until the operator allows it, it only asks them. It stops with the gateway.
+- **Stored:** the agent's key, in this profile's `.env` as `AGENTINBOX_SECRET_KEY`, which `hermes agentinbox setup` writes through Hermes. The plugin's own state, in `agentinbox/state.json` in this profile's Hermes home: where it got to in the messages, when the operator allowed listening, each contact conversation's level, and the questions Hermes asked that still wait for an answer, with their text.
+- **Commands:** on macOS, `scutil --get ComputerName`, for the computer's name.
+- **Reads:** its settings in `config.yaml` (`platforms.agentinbox`), and, in `hermes agentinbox setup`, the environment that command started with, to tell a person at a terminal from an agent.
+- **No telemetry.**
 
 ## Development
 

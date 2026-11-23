@@ -747,9 +747,12 @@ async def test_a_contacts_allow_after_full_access_went_off_is_a_deny(fake, resol
     confirm = await adapter.send_slash_confirm(chat_id="conv_ben", title="/new", message=NEW_PROMPT,
                                                session_key="sess_1", confirm_id="7", metadata={"thread_id": thread})
 
-    # The operator turned it off before Ben tapped: the messages with his taps say so.
+    # The operator turned it off before Ben tapped: the message with his first tap says so, and takes his other card
+    # off at once, as his next message would. His second tap then finds nothing waiting.
     assert await adapter._on_answer(message("m8", answers=allow, answer={"status": "approved"}, **BEN))
-    assert await adapter._on_answer(message("m9", answers=confirm.message_id, answer={"status": "approved"}, **BEN))
+    assert fake.interactions[confirm.message_id]["status"] == "canceled"
+    assert not await adapter._on_answer(message("m9", answers=confirm.message_id, answer={"status": "approved"},
+                                                **BEN))
     assert resolved == [("approval", "sess_1", "deny",
                          "Ben allowed it after their full access was turned off, so it isn't allowed.")]
     assert confirms == [("sess_1", "7", "cancel")]

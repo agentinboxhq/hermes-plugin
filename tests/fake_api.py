@@ -152,6 +152,10 @@ class FakeApi:
             page = self.contacts[start:start + size]
             more = str(start + size) if start + size < len(self.contacts) else None
             return httpx.Response(200, json={"data": page, "next": more})
+        if request.method == "GET" and path.startswith("/v1/contacts/") and path.count("/") == 3:
+            contact = next((each for each in self.contacts if each.get("id") == unquote(path.split("/")[3])), None)
+            return httpx.Response(200, json={"data": contact}) if contact else \
+                httpx.Response(404, json={"message": "Contact not found"})
         if route == "GET /v1/inbox":
             self.reads.append(params)
             return httpx.Response(200, json={"data": self.conversations, "next": self.conversations_next})
