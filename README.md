@@ -6,8 +6,10 @@ It is a gateway platform plugin: Agent Inbox becomes one more of Hermes's chats,
 
 ## Install
 
+The plugin is in [Hermes's plugin catalog](https://hermes-agent.nousresearch.com/marketplace/agentinbox), which installs the version its maintainers reviewed:
+
 ```bash
-hermes plugins install agentinboxhq/hermes-plugin --enable
+hermes plugins install agentinbox --enable
 ```
 
 ## Connect
